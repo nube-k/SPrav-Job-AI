@@ -5,10 +5,11 @@ const API_BASE = 'http://localhost:8000/api';
 
 function Settings({ token }) {
     const [creds, setCreds] = useState({});
-    const [linkedinEmail, setLinkedinEmail] = useState('');
-    const [linkedinPassword, setLinkedinPassword] = useState('');
+
     const [naukriEmail, setNaukriEmail] = useState('');
     const [naukriPassword, setNaukriPassword] = useState('');
+    const [groqKey, setGroqKey] = useState('');
+    const [openrouterKey, setOpenrouterKey] = useState('');
     const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState('');
     const [activeSave, setActiveSave] = useState('');
@@ -28,20 +29,6 @@ function Settings({ token }) {
         }
     };
 
-    const handleSaveLinkedin = async (e) => {
-        e.preventDefault();
-        setSaving(true); setSaveStatus(''); setActiveSave('linkedin');
-        try {
-            await axios.post(`${API_BASE}/credentials`, {
-                service: 'linkedin',
-                credentials: { email: linkedinEmail, password: linkedinPassword }
-            }, { headers: { Authorization: `Bearer ${token}` } });
-            setSaveStatus('Saved securely to local database.');
-            setLinkedinEmail(''); setLinkedinPassword('');
-            fetchCredentials();
-        } catch (e) { setSaveStatus('Failed to save.'); } finally { setSaving(false); }
-    };
-
     const handleSaveNaukri = async (e) => {
         e.preventDefault();
         setSaving(true); setSaveStatus(''); setActiveSave('naukri');
@@ -56,7 +43,33 @@ function Settings({ token }) {
         } catch (e) { setSaveStatus('Failed to save.'); } finally { setSaving(false); }
     };
 
-    const liStatus = creds['linkedin']?.['password']?.is_set ? '🟢 Configured' : '🔴 Not configured';
+    const handleSaveGroq = async (e) => {
+        e.preventDefault();
+        setSaving(true); setSaveStatus(''); setActiveSave('groq');
+        try {
+            await axios.post(`${API_BASE}/credentials`, {
+                service: 'groq',
+                credentials: { api_key: groqKey }
+            }, { headers: { Authorization: `Bearer ${token}` } });
+            setSaveStatus('Groq API Key saved.');
+            setGroqKey('');
+            fetchCredentials();
+        } catch (e) { setSaveStatus('Failed to save.'); } finally { setSaving(false); }
+    };
+
+    const handleSaveOpenRouter = async (e) => {
+        e.preventDefault();
+        setSaving(true); setSaveStatus(''); setActiveSave('openrouter');
+        try {
+            await axios.post(`${API_BASE}/credentials`, {
+                service: 'openrouter',
+                credentials: { api_key: openrouterKey }
+            }, { headers: { Authorization: `Bearer ${token}` } });
+            setSaveStatus('OpenRouter API Key saved.');
+            setOpenrouterKey('');
+            fetchCredentials();
+        } catch (e) { setSaveStatus('Failed to save.'); } finally { setSaving(false); }
+    };
 
     return (
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
@@ -66,58 +79,7 @@ function Settings({ token }) {
                 Everything here is stored securely on your machine.
             </p>
 
-            <div className="glass-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
-                <h2 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"></path><rect x="2" y="9" width="4" height="12"></rect><circle cx="4" cy="4" r="2"></circle></svg>
-                    LinkedIn Scout
-                </h2>
-                
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
-                    <p style={{ margin: '0 0 0.5rem 0', color: 'var(--text-secondary)' }}>
-                        <strong>Why is this needed?</strong> The headless browser needs to log in to read 
-                        HR/CEO posts. Your credentials are encrypted and stored <strong>only on your local machine</strong>.
-                    </p>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-                        <span>Current Status:</span> 
-                        <strong style={{ color: creds['linkedin']?.['password']?.is_set ? 'var(--success)' : 'var(--error)' }}>
-                            {liStatus}
-                        </strong>
-                    </div>
-                </div>
-
-                <form onSubmit={handleSaveLinkedin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: '400px' }}>
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>LinkedIn Email</label>
-                        <input 
-                            type="email" 
-                            className="input" 
-                            style={{ width: '100%' }}
-                            value={linkedinEmail}
-                            onChange={e => setLinkedinEmail(e.target.value)}
-                            placeholder={creds['linkedin']?.['email']?.is_set ? '••••••••' : 'Enter email'}
-                            required
-                        />
-                    </div>
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>LinkedIn Password</label>
-                        <input 
-                            type="password" 
-                            className="input" 
-                            style={{ width: '100%' }}
-                            value={linkedinPassword}
-                            onChange={e => setLinkedinPassword(e.target.value)}
-                            placeholder={creds['linkedin']?.['password']?.is_set ? '••••••••' : 'Enter password'}
-                            required
-                        />
-                    </div>
-                    <button type="submit" className="btn" disabled={saving || (!linkedinEmail && !linkedinPassword)}>
-                        {saving ? 'Saving...' : 'Save Credentials'}
-                    </button>
-                    {saveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>{saveStatus}</span>}
-                </form>
-            </div>
-
-            <div className="glass-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+            <div className="premium-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
                 <h2 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <span style={{ fontSize: '1.3rem' }}>🇮🇳</span> Naukri.com Auto-Apply
                 </h2>
@@ -153,7 +115,67 @@ function Settings({ token }) {
                 </form>
             </div>
 
-            <div className="glass-card" style={{ padding: '2rem' }}>
+            <div className="premium-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+                <h2 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+                    Groq API Key
+                </h2>
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                    <p style={{ margin: '0 0 0.5rem 0', color: 'var(--text-secondary)' }}>
+                        <strong>Why is this needed?</strong> Used for ultra-fast JSON extraction (Llama3-8b). Key is stored securely in your local database.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+                        <span>Current Status:</span>
+                        <strong style={{ color: creds['groq']?.['api_key']?.is_set ? 'var(--success)' : 'var(--error)' }}>
+                            {creds['groq']?.['api_key']?.is_set ? '🟢 Configured' : '🔴 Not configured'}
+                        </strong>
+                    </div>
+                </div>
+                <form onSubmit={handleSaveGroq} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: '400px' }}>
+                    <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>API Key</label>
+                        <input type="password" className="input" style={{ width: '100%' }} value={groqKey}
+                            onChange={e => setGroqKey(e.target.value)}
+                            placeholder={creds['groq']?.['api_key']?.is_set ? 'gsk_••••••••••••' : 'Enter Groq API Key'} required />
+                    </div>
+                    <button type="submit" className="btn" disabled={saving && activeSave === 'groq'}>
+                        {saving && activeSave === 'groq' ? 'Saving...' : 'Save Groq Key'}
+                    </button>
+                    {activeSave === 'groq' && saveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>{saveStatus}</span>}
+                </form>
+            </div>
+
+            <div className="premium-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+                <h2 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M16 12l-4-4-4 4M12 8v8"></path></svg>
+                    OpenRouter API Key
+                </h2>
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                    <p style={{ margin: '0 0 0.5rem 0', color: 'var(--text-secondary)' }}>
+                        <strong>Why is this needed?</strong> Used for deep logic reasoning if your laptop cannot run heavy models locally. Key is stored securely in your local database.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+                        <span>Current Status:</span>
+                        <strong style={{ color: creds['openrouter']?.['api_key']?.is_set ? 'var(--success)' : 'var(--error)' }}>
+                            {creds['openrouter']?.['api_key']?.is_set ? '🟢 Configured' : '🔴 Not configured'}
+                        </strong>
+                    </div>
+                </div>
+                <form onSubmit={handleSaveOpenRouter} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: '400px' }}>
+                    <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>API Key</label>
+                        <input type="password" className="input" style={{ width: '100%' }} value={openrouterKey}
+                            onChange={e => setOpenrouterKey(e.target.value)}
+                            placeholder={creds['openrouter']?.['api_key']?.is_set ? 'sk-or-v1-••••••••••••' : 'Enter OpenRouter API Key'} required />
+                    </div>
+                    <button type="submit" className="btn" disabled={saving && activeSave === 'openrouter'}>
+                        {saving && activeSave === 'openrouter' ? 'Saving...' : 'Save OpenRouter Key'}
+                    </button>
+                    {activeSave === 'openrouter' && saveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>{saveStatus}</span>}
+                </form>
+            </div>
+
+            <div className="premium-card" style={{ padding: '2rem' }}>
                 <h2 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
                     Gmail Integration

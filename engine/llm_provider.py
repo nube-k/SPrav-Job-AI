@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import os
+from engine.auth import get_system_credential
 
 gpu_mutex = threading.Lock()
 
@@ -17,7 +18,22 @@ def detect_loop(tokens_list: list) -> bool:
                 return True
     return False
 
+def ensure_ollama_running():
+    import urllib.request
+    import urllib.error
+    import subprocess
+    try:
+        urllib.request.urlopen("http://localhost:11434/", timeout=1)
+    except urllib.error.URLError:
+        print("[Ollama] Engine is offline. Silently auto-starting Ollama in the background...")
+        if os.name == 'nt':
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(3) # Give the engine a few seconds to warm up
+
 def _generate_ollama(model: str, prompt: str, temperature: float = 0.3) -> tuple[bool, str]:
+    ensure_ollama_running()
     print(f"\n[Ollama] Loading Expert into VRAM: {model} (Temp: {temperature})")
     url = "http://localhost:11434/api/generate"
     payload = {
@@ -169,14 +185,14 @@ def get_routing_config(use_case: str) -> dict:
     elif use_case in ["hard_filter", "brain_retrieval"]:
         routing["model"] = "deepseek-r1:7b" # DeepSeek-R1-Distill-Qwen-7B
     elif use_case == "toxic_forensics" or use_case == "strategy_generator":
-        routing["model"] = "magnum-v4:9b" # Magnum-V4-9b-Abliterated
+        routing["model"] = "bespoke-minicheck" # Bespoke-Minicheck-7B
     elif use_case == "resume_tailoring":
-        routing["model"] = "llama3.1:8b"
+        routing["model"] = "hermes3:8b" # Hermes-3-Llama-3.1-8B
     return routing
 
 def generate(prompt: str, use_case: str = "general") -> str:
     """
-    SPrav Agnostic MoE Orchestrator.
+    SPrav MOE model Orchestrator.
     Dynamically routes to Local Ollama, Grok, Claude, or Gemini based on config.
     Automatically falls back to Local Ollama if a Cloud API fails.
     """
@@ -208,18 +224,18 @@ def generate(prompt: str, use_case: str = "general") -> str:
             print(f"[Agnostic MoE] Missing Gemini key for '{use_case}'. Falling back to Ollama.")
             
     elif provider == "groq":
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = get_system_credential("groq", "api_key") or os.getenv("GROQ_API_KEY")
         if api_key:
             success, result = _generate_groq(model_name, prompt, api_key)
         else:
-            print(f"[Agnostic MoE] Missing Groq key for '{use_case}'. Falling back to Ollama.")
+            print(f"[Agnostic MoE] Missing Groq key for '{use_case}'. Configure it in the UI Settings. Falling back to Ollama.")
             
     elif provider == "openrouter":
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = get_system_credential("openrouter", "api_key") or os.getenv("OPENROUTER_API_KEY")
         if api_key:
             success, result = _generate_openrouter(model_name, prompt, api_key)
         else:
-            print(f"[Agnostic MoE] Missing OpenRouter key for '{use_case}'. Falling back to Ollama.")
+            print(f"[Agnostic MoE] Missing OpenRouter key for '{use_case}'. Configure it in the UI Settings. Falling back to Ollama.")
             
     # Primary Local Execution or Cloud Fallback
     if not success:
@@ -232,9 +248,9 @@ def generate(prompt: str, use_case: str = "general") -> str:
         elif use_case in ["hard_filter", "brain_retrieval"]:
             fallback_model = "deepseek-r1:7b"
         elif use_case == "toxic_forensics" or use_case == "strategy_generator":
-            fallback_model = "magnum-v4:9b"
+            fallback_model = "bespoke-minicheck"
         elif use_case == "resume_tailoring":
-            fallback_model = "llama3.1:8b"
+            fallback_model = "hermes3:8b"
         else:
             fallback_model = "qwen2.5-coder:7b-instruct"
             
