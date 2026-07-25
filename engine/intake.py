@@ -71,7 +71,7 @@ def _extract_text_from_docx(file_path: str) -> str:
 
 def _call_extraction_llm(text: str) -> dict:
     """
-    Calls qwen2.5:7b-instruct (the extraction model already in the MoE routing)
+    Calls qwen2.5-coder:7b-instruct (the extraction model already in the MoE routing)
     to parse raw resume text into structured JSON.
     """
     from engine.llm_provider import generate
@@ -155,8 +155,8 @@ def _normalise_work_history(raw_entries: list, source: str) -> list:
     """Converts raw work history dicts into the full schema format with bullet IDs."""
     result = []
     for entry in raw_entries:
-        company = entry.get("company", "").strip()
-        role = entry.get("role", "").strip()
+        company = (entry.get("company") or "").strip()
+        role = (entry.get("role") or "").strip()
         if not company:
             continue
         entry_id = _make_id("work", company)
@@ -182,7 +182,7 @@ def _normalise_work_history(raw_entries: list, source: str) -> list:
             "type": entry.get("type", "full_time"),
             "start_date": entry.get("start_date", ""),
             "end_date": entry.get("end_date", ""),
-            "in_progress": entry.get("end_date", "").lower() in ("present", "current", ""),
+            "in_progress": (entry.get("end_date") or "").lower() in ("present", "current", ""),
             "last_reviewed": datetime.now().strftime("%Y-%m-%d"),
             "bullets": bullets,
             "_source": source,
@@ -198,7 +198,7 @@ def parse_resume(file_path: str) -> dict:
     """
     Extracts structured profile data from an existing resume PDF or DOCX.
     Uses pdfplumber for PDFs (handles multi-column layouts), python-docx for DOCX.
-    Then sends raw text to qwen2.5:7b-instruct for structured extraction.
+    Then sends raw text to qwen2.5-coder:7b-instruct for structured extraction.
     Returns the common intermediate dict.
     """
     path = Path(file_path)

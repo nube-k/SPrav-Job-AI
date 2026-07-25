@@ -41,6 +41,7 @@ from discovery.hn_whoishiring import run_hn_scanner
 from discovery.yc_startup_scanner import run_yc_scanner
 from engine.config import (
     FIT_AUTO_APPLY_THRESHOLD,
+    ATS_AUTO_APPLY_THRESHOLD,
     COMPANY_DAILY_CAP,
     PORTAL_DAILY_CAP,
     TOTAL_DAILY_CAP,
@@ -70,7 +71,7 @@ def get_config():
 
 def update_job_status(job_id: str, status: str):
     with db_mutex:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         cursor = conn.cursor()
         now_str = datetime.utcnow().isoformat()
         cursor.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?", (status, now_str, job_id))
@@ -117,7 +118,7 @@ def verify_job_node(state: JobState) -> JobState:
         
     print("\n[Phase 0.5] Executing Block G Posting-Legitimacy Check...")
     is_ghost, scam_reason = detect_ghost_job(
-        job['description'],
+        job.get('description') or '',
         job.get('location', ''),
         company=job.get('company', ''),
         title=job.get('title', '')
@@ -125,7 +126,7 @@ def verify_job_node(state: JobState) -> JobState:
     if is_ghost:
         print(f"[Phase 0.5] WARNING: Job rejected! Reason: {scam_reason}")
         with db_mutex:
-            conn_up = sqlite3.connect(DB_PATH)
+            conn_up = sqlite3.connect(DB_PATH, timeout=30.0)
             c_up = conn_up.cursor()
             c_up.execute("UPDATE jobs SET status = 'rejected', scam_flags = ? WHERE id = ?", (scam_reason, job['id']))
             conn_up.commit()
@@ -134,14 +135,14 @@ def verify_job_node(state: JobState) -> JobState:
         return state
         
     print("\n[Phase 0.75] Hashing Job Description to detect reposts...")
-    semantic_text = job['description'].lower()
+    semantic_text = (job.get('description') or '').lower()
     semantic_text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4}', '', semantic_text)
     semantic_text = re.sub(r'posted \d+ days ago', '', semantic_text)
     semantic_text = re.sub(r'\s+', '', semantic_text)
     jd_hash = hashlib.md5(semantic_text.encode('utf-8')).hexdigest()
     
     with db_mutex:
-        conn_check = sqlite3.connect(DB_PATH)
+        conn_check = sqlite3.connect(DB_PATH, timeout=30.0)
         c_check = conn_check.cursor()
         c_check.execute("SELECT id FROM jobs WHERE jd_hash = ? AND id != ?", (jd_hash, job['id']))
         repost_match = c_check.fetchone()
@@ -173,7 +174,7 @@ def scope_gate_node(state: JobState) -> JobState:
     if not passes:
         print(f"[Phase 0.9] OUT OF SCOPE: {reason}")
         with db_mutex:
-            conn_s = sqlite3.connect(DB_PATH)
+            conn_s = sqlite3.connect(DB_PATH, timeout=30.0)
             c_s = conn_s.cursor()
             # Migrate scope_reason column if this is an older jobs.db
             try:
@@ -198,9 +199,9 @@ def scope_gate_node(state: JobState) -> JobState:
 def extraction_node(state: JobState) -> JobState:
     job = state['job']
     print("\n[Phase 1] Extracting structured data from raw HR post...")
-    extraction_prompt = """Extract Job Title, Requirements, and Years of Experience (YoE) from this unstructured text. 
+    extraction_prompt = f"""Extract Job Title, Requirements, and Years of Experience (YoE) from this unstructured text. 
 Strict JSON output only. If no YoE is stated, put 0.
-Text: {job['description']}"""
+Text: {job.get('description', '')}"""
     
     extracted_data_raw = generate(extraction_prompt, use_case="extraction")
     try:
@@ -219,7 +220,7 @@ Text: {job['description']}"""
     state['missing_skills'] = missing
     
     with db_mutex:
-        conn_up = sqlite3.connect(DB_PATH)
+        conn_up = sqlite3.connect(DB_PATH, timeout=30.0)
         c_up = conn_up.cursor()
         
         matched_str = ", ".join(matched)
@@ -257,7 +258,7 @@ def evaluate_fit_node(state: JobState) -> JobState:
     rubric = json.dumps(rubric_data)
     
     with db_mutex:
-        conn_up = sqlite3.connect(DB_PATH)
+        conn_up = sqlite3.connect(DB_PATH, timeout=30.0)
         c_up = conn_up.cursor()
         c_up.execute("UPDATE jobs SET fit_score = ?, evaluation_rubric = ? WHERE id = ?", (score, rubric, job['id']))
         conn_up.commit()
@@ -289,7 +290,7 @@ def prep_interview_node(state: JobState) -> JobState:
     contact_msg = generate_contact_message(master_identity, extracted_json)
     
     with db_mutex:
-        conn_up = sqlite3.connect(DB_PATH)
+        conn_up = sqlite3.connect(DB_PATH, timeout=30.0)
         c_up = conn_up.cursor()
         c_up.execute("UPDATE jobs SET star_stories = ?, contact_message = ? WHERE id = ?", 
                      (json.dumps(stories), contact_msg, job['id']))
@@ -338,7 +339,7 @@ def tailor_node(state: JobState) -> JobState:
 
         # Persist ATS score to DB
         with db_mutex:
-            conn_up = sqlite3.connect(DB_PATH)
+            conn_up = sqlite3.connect(DB_PATH, timeout=30.0)
             c_up = conn_up.cursor()
             c_up.execute("UPDATE jobs SET ats_score = ? WHERE id = ?",
                          (ats_score_pct, job['id']))
@@ -363,7 +364,7 @@ def tailor_node(state: JobState) -> JobState:
             state['disagreement_reason'] = reason
             print(f"[Phase 3.5] DISAGREEMENT — {reason}")
             with db_mutex:
-                conn_d = sqlite3.connect(DB_PATH)
+                conn_d = sqlite3.connect(DB_PATH, timeout=30.0)
                 c_d = conn_d.cursor()
                 c_d.execute("UPDATE jobs SET status='human_review_disagreement', "
                             "disagreement_reason=? WHERE id=?", (reason, job['id']))
@@ -380,7 +381,7 @@ def tailor_node(state: JobState) -> JobState:
             state['disagreement_reason'] = reason
             print(f"[Phase 3.5] DISAGREEMENT — {reason}")
             with db_mutex:
-                conn_d = sqlite3.connect(DB_PATH)
+                conn_d = sqlite3.connect(DB_PATH, timeout=30.0)
                 c_d = conn_d.cursor()
                 c_d.execute("UPDATE jobs SET status='human_review_disagreement', "
                             "disagreement_reason=? WHERE id=?", (reason, job['id']))
@@ -453,7 +454,7 @@ def compile_dispatch_node(state: JobState) -> JobState:
         state['status'] = 'failed_generation'
         return state
 
-    url = job["url"].lower()
+    url = (job.get("url") or "").lower()
     auto_eligible = state.get('auto_apply_eligible', False)
     company = job.get('company', 'Unknown')
     title = job.get('title', 'Unknown')
@@ -463,7 +464,7 @@ def compile_dispatch_node(state: JobState) -> JobState:
 
     # ── Global & Portal daily rate limits ──────────────────────────────────
     with db_mutex:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         cursor = conn.cursor()
         
         # Check Total limit
@@ -665,12 +666,19 @@ def build_job_graph():
     
     workflow.add_edge("prep_interview", "tailor")
     
-    workflow.add_conditional_edges("tailor", lambda x: x['status'], {
+    def route_tailor(state: JobState):
+        status = state['status']
+        if status == 'failed_generation':
+            return 'failed_generation'
+        if status == 'human_review_disagreement':
+            return 'human_review_disagreement'
+        return 'fact_check'
+        
+    workflow.add_conditional_edges("tailor", route_tailor, {
         'failed_generation': END,
-        # Disagreement jobs skip fact-check and go directly to dispatch
-        # (dispatch will route them to Human Apply with the reason note)
         'human_review_disagreement': 'dispatch',
-    }, default="fact_check")
+        'fact_check': 'fact_check'
+    })
 
     def route_fact_check(state: JobState):
         status = state['status']
@@ -694,7 +702,7 @@ def build_job_graph():
 
 def execute_sprav_moe_pipeline():
     with db_mutex:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM jobs WHERE status = 'new'")
@@ -737,7 +745,7 @@ def check_ollama_models():
         resp = requests.get("http://localhost:11434/api/tags", timeout=5)
         if resp.status_code == 200:
             models = [m['name'] for m in resp.json().get('models', [])]
-            required = ["qwen2.5:7b-instruct", "deepseek-r1:7b", "bespoke-minicheck", "hermes3:8b", "nomic-embed-text:latest"]
+            required = ["qwen2.5-coder:7b-instruct", "deepseek-r1:7b", "bespoke-minicheck", "hermes3:8b", "nomic-embed-text:latest"]
             missing = [m for m in required if not any(m in available for available in models)]
             if missing:
                 print(f"[WARNING] Missing recommended local models: {missing}. Fallbacks will be used or execution may fail.")
@@ -795,7 +803,18 @@ def run_daemon():
         print(f"\n--- [Cycle {cycle}] Starting Job Discovery ---")
         try:
             print("\n--- Triggering Node.js Stealth Scraper ---")
-            subprocess.run(["cmd", "/c", "node scraper_service/stealth_crawler.js"], check=False)
+            try:
+                subprocess.run(
+                    ["cmd", "/c", "node scraper_service/stealth_crawler.js"], 
+                    check=False,
+                    timeout=300,  # 5 minute timeout to prevent daemon from freezing
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except subprocess.TimeoutExpired:
+                print("\n[Warning] Node.js Scraper timed out! Moving on to next phase.")
             
             print("\n--- Triggering Zero-Token ATS Discovery ---")
             try:

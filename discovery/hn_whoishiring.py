@@ -9,6 +9,8 @@ from engine.llm_provider import generate
 from engine.tailor import load_kb
 
 DB_PATH = "jobs.db"
+from discovery.scraper import load_targeting
+
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 
 def get_latest_who_is_hiring_post():
@@ -52,8 +54,11 @@ def run_hn_scanner() -> list:
             
             text = comment.get("text", "").lower()
             
-            # Simple keyword matching for Indian/Remote and roles
-            if "remote" in text or "india" in text:
+            # Check if post mentions remote or any target locations
+            targeting = load_targeting()
+            target_locs = [loc.lower() for loc in targeting.get("target_locations", ["remote"])]
+            
+            if "remote" in text or any(loc in text for loc in target_locs):
                 role_match = any(r in text for r in roles) if roles else True
                 if role_match:
                     email = get_best_email(comment.get("text", ""), comment.get("by", ""), "")
@@ -72,7 +77,7 @@ def _log_hn_application(job_id, company, title, url, post_text, email_to, kb):
     prompt = f"""Draft a 3-sentence cold email for {kb.get('personal', {}).get('name', 'Applicant')} to send to {email_to} at {company} for a role matching their profile based on this HN post: {post_text[:500]}"""
     email_draft = generate(prompt, use_case="resume_tailoring")
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()
     cursor.execute("""

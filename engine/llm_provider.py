@@ -9,12 +9,19 @@ gpu_mutex = threading.Lock()
 
 def detect_loop(tokens_list: list) -> bool:
     """Infinite Word Chain State Tracker."""
-    for seq_len in range(3, 21):
-        if len(tokens_list) >= seq_len * 3:
+    for seq_len in range(4, 21):
+        if len(tokens_list) >= seq_len * 4:
             seq1 = tokens_list[-seq_len:]
             seq2 = tokens_list[-seq_len*2 : -seq_len]
             seq3 = tokens_list[-seq_len*3 : -seq_len*2]
-            if seq1 == seq2 == seq3:
+            seq4 = tokens_list[-seq_len*4 : -seq_len*3]
+            
+            # Check if all four sequences are identical
+            if seq1 == seq2 == seq3 == seq4:
+                # Ignore if the sequence is entirely whitespace/newlines
+                seq_str = "".join(seq1)
+                if seq_str.strip() == "":
+                    continue
                 return True
     return False
 
@@ -32,9 +39,9 @@ def ensure_ollama_running():
             subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(3) # Give the engine a few seconds to warm up
 
-def _generate_ollama(model: str, prompt: str, temperature: float = 0.3) -> tuple[bool, str]:
+def _generate_ollama(model: str, prompt: str, temperature: float = 0.3, format_json: bool = False) -> tuple[bool, str]:
     ensure_ollama_running()
-    print(f"\n[Ollama] Loading Expert into VRAM: {model} (Temp: {temperature})")
+    print(f"\n[Ollama] Loading Expert into VRAM: {model} (Temp: {temperature}, JSON: {format_json})")
     url = "http://localhost:11434/api/generate"
     payload = {
         "model": model, 
@@ -43,10 +50,11 @@ def _generate_ollama(model: str, prompt: str, temperature: float = 0.3) -> tuple
         "keep_alive": 0,
         "options": {
             "num_ctx": 32768,
-            "kv_cache_type": "q4_k",
             "temperature": temperature
         }
     }
+    if format_json:
+        payload["format"] = "json"
     
     full_response = ""
     tokens_tracker = []
@@ -98,16 +106,44 @@ def _generate_openai(model: str, prompt: str, api_key: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-def _generate_groq(model: str, prompt: str, api_key: str) -> tuple[bool, str]:
+def _generate_groq(model: str, prompt: str, api_key: str, use_case: str = "default") -> tuple[bool, str]:
     print(f"\n[Cloud API] Routing to Groq endpoint: {model} (Bypassing GPU Mutex)")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3
+        "temperature": 0.0,
+        "reasoning_effort": "high",
+        "disable_tool_validation": True
     }
+    
+    if use_case == "resume_tailoring":
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "resume_tailoring_output",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tailored_bullets": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "description": "A single resume bullet point strictly following the XYZ formula based on contextual grounding."
+                            }
+                        }
+                    },
+                    "required": ["tailored_bullets"],
+                    "additionalProperties": False
+                }
+            }
+        }
+    else:
+        payload["response_format"] = {"type": "json_object"}
+
     try:
-        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=60)
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=90)
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         return True, content
@@ -181,7 +217,7 @@ def get_routing_config(use_case: str) -> dict:
             
     # Default local mapping if no config overrides
     if use_case == "extraction":
-        routing["model"] = "qwen2.5:7b-instruct"
+        routing["model"] = "qwen2.5-coder:7b-instruct"
     elif use_case in ["hard_filter", "brain_retrieval"]:
         routing["model"] = "deepseek-r1:7b" # DeepSeek-R1-Distill-Qwen-7B
     elif use_case == "toxic_forensics" or use_case == "strategy_generator":
@@ -226,7 +262,7 @@ def generate(prompt: str, use_case: str = "general") -> str:
     elif provider == "groq":
         api_key = get_system_credential("groq", "api_key") or os.getenv("GROQ_API_KEY")
         if api_key:
-            success, result = _generate_groq(model_name, prompt, api_key)
+            success, result = _generate_groq(model_name, prompt, api_key, use_case)
         else:
             print(f"[Agnostic MoE] Missing Groq key for '{use_case}'. Configure it in the UI Settings. Falling back to Ollama.")
             
@@ -242,24 +278,38 @@ def generate(prompt: str, use_case: str = "general") -> str:
         if provider != "ollama":
             print(f"[Agnostic MoE] Cloud Provider '{provider}' failed: {result}. Failing over to Local Ollama.")
             
-        # Hard fallback to DeepSeek/Qwen mapping if we were trying a cloud model
-        if use_case == "extraction":
-            fallback_model = "qwen2.5:7b-instruct"
-        elif use_case in ["hard_filter", "brain_retrieval"]:
-            fallback_model = "deepseek-r1:7b"
-        elif use_case == "toxic_forensics" or use_case == "strategy_generator":
-            fallback_model = "bespoke-minicheck"
-        elif use_case == "resume_tailoring":
-            fallback_model = "hermes3:8b"
+            # Hard fallback to DeepSeek/Qwen mapping if we were trying a cloud model
+            if use_case == "extraction":
+                fallback_model = "qwen2.5-coder:7b-instruct"
+            elif use_case in ["hard_filter", "brain_retrieval"]:
+                fallback_model = "deepseek-r1:7b"
+            elif use_case == "toxic_forensics" or use_case == "strategy_generator":
+                fallback_model = "bespoke-minicheck"
+            elif use_case == "resume_tailoring":
+                fallback_model = "qwen2.5-coder:7b-instruct"
+            elif use_case == "copilot":
+                fallback_model = "hermes3:8b"
+            else:
+                fallback_model = "qwen2.5-coder:7b-instruct"
         else:
-            fallback_model = "qwen2.5-coder:7b-instruct"
+            # If Ollama is the primary provider, use the configured model_name
+            fallback_model = model_name
             
-        success, result = _generate_ollama(fallback_model, prompt, temperature=0.3)
+        if use_case == "resume_tailoring":
+            # Strict deterministic constraint for JSON formatting
+            success, result = _generate_ollama(fallback_model, prompt, temperature=0.0, format_json=True)
+        else:
+            success, result = _generate_ollama(fallback_model, prompt, temperature=0.3)
         
-        # Fallback Resolution if the local word-chain tracker breaks a loop
+        # Secondary Fallback Resolution if the local generator breaks a loop or fails JSON compliance
         if not success and "[State Hash Tracker]" in result or not success:
-            print(f"[SPrav MoE] Initiating Fallback Resolution: High-Temperature {fallback_model}...")
-            _, fallback_result = _generate_ollama(fallback_model, prompt, temperature=0.8)
+            if use_case == "resume_tailoring":
+                secondary_model = "hermes3:8b"
+                print(f"[SPrav MoE] Initiating Secondary Fallback: {secondary_model}...")
+                _, fallback_result = _generate_ollama(secondary_model, prompt, temperature=0.0, format_json=True)
+            else:
+                print(f"[SPrav MoE] Initiating Fallback Resolution: High-Temperature {fallback_model}...")
+                _, fallback_result = _generate_ollama(fallback_model, prompt, temperature=0.8)
             return fallback_result
             
     return result

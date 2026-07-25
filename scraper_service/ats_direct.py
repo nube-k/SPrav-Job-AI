@@ -3,7 +3,10 @@ import sqlite3
 import random
 import time
 
-DB_PATH = "../jobs.db"
+import json
+from discovery.scraper import _expand_keywords
+
+DB_PATH = "jobs.db"
 # Public datasets of companies that use Greenhouse and Lever
 DATASET_BASE = "https://raw.githubusercontent.com/Feashliaa/job-board-aggregator/main/data"
 
@@ -27,7 +30,7 @@ def scan_greenhouse(company: str, keywords: list) -> list:
         data = resp.json()
         jobs = []
         for j in data.get('jobs', []):
-            title = j.get('title', '').lower()
+            title = (j.get('title') or '').lower()
             if any(k.lower() in title for k in keywords):
                 jobs.append({
                     "title": j.get('title', ''),
@@ -50,7 +53,7 @@ def scan_lever(company: str, keywords: list) -> list:
         data = resp.json()
         jobs = []
         for j in data:
-            title = j.get('text', '').lower()
+            title = (j.get('text') or '').lower()
             if any(k.lower() in title for k in keywords):
                 jobs.append({
                     "title": j.get('text', ''),
@@ -63,7 +66,18 @@ def scan_lever(company: str, keywords: list) -> list:
     except Exception:
         return []
 
-def run_ats_discovery(keywords=["engineer", "developer", "react", "python", "backend", "frontend"]):
+def run_ats_discovery():
+    try:
+        with open("knowledge_base/scope.json", "r") as f:
+            scope = json.load(f)
+        keywords = [r["keyword"] for r in scope.get("roles", []) if r.get("preference") == "apply"]
+        if not keywords:
+            keywords = ["engineer", "developer", "react", "python", "backend", "frontend"]
+    except Exception:
+        keywords = ["engineer", "developer", "react", "python", "backend", "frontend"]
+        
+    keywords = _expand_keywords(keywords)
+        
     greenhouse_list, lever_list = fetch_companies()
     
     print(f"Loaded {len(greenhouse_list)} Greenhouse companies and {len(lever_list)} Lever companies.")
@@ -75,7 +89,7 @@ def run_ats_discovery(keywords=["engineer", "developer", "react", "python", "bac
     sample_gh = greenhouse_list[:20]
     sample_lv = lever_list[:20]
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     discovered_count = 0

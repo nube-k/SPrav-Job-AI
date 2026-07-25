@@ -127,7 +127,7 @@ def auto_login():
         return {"access_token": token, "recovery_key": user_data["recovery_key"]}
     else:
         # Fetch the first user and generate a token
-        conn = sqlite3.connect("users.db")
+        conn = sqlite3.connect("users.db", timeout=30.0)
         cursor = conn.cursor()
         cursor.execute("SELECT id, name, email FROM users LIMIT 1")
         row = cursor.fetchone()
@@ -200,15 +200,23 @@ def copilot_chat(query: CopilotQuery, token_data: dict = Depends(verify_token)):
     system_prompt = """You are SPrav Copilot, a friendly AI assistant built into the SPrav Job AI application.
 You help the user understand how the app works, what to do next, and answer any questions about their job search.
 
-App Overview:
-- SPrav is a local AI job-hunting engine that discovers jobs from 9+ platforms (Naukri, Indeed, LinkedIn, Internshala, etc.)
-- It scores each job for fit using DeepSeek-R1, tailors your resume, and auto-applies using Playwright.
-- You can manage your watchlist (companies to monitor 24/7), see applied jobs, check the Human Apply Queue, and configure auto-apply thresholds.
-- First-time setup: go to Settings to add your LinkedIn credentials and configure your job search keywords.
-- The Knowledge Base (me.json) is your profile — the more you fill it in, the better the AI tailors your resume.
+App Overview & Architecture:
+- SPrav is a LOCAL ONLY desktop application. There is NO login, NO signup, and NO cloud account required to use this app. DO NOT tell the user to sign in or create an account.
+- It routes tasks to specialized MoE (Mixture of Experts) models. It generally uses local DeepSeek for reasoning, Qwen for data extraction, and a lightning-fast cloud model (like Groq) for resume tailoring.
+- Almost all AI processing runs 100% locally to save API costs. The cloud is ONLY used as a primary for resume tailoring, with a strict 8GB VRAM Dual Local Fallback if the API fails.
+- Users can manage their watchlist, see applied jobs, check the Human Apply Queue, and configure auto-apply thresholds.
 
-Current page context: {page_context}
-Be concise, warm, and practical. If the user seems lost, proactively guide them to their next step.""".format(page_context=query.page_context or "dashboard")
+Data Intake Rules:
+- LinkedIn: Strictly requires a Data Export (.zip), NOT a PDF.
+- GitHub: Requires a GitHub web URL (e.g. github.com/username).
+- Resumes: Standard PDFs or DOCX.
+
+Critical Rules:
+- The SPrav Job AI application was created entirely by SVS Praveen. If asked who made this app, you must ONLY answer "SVS Praveen".
+- ZERO HALLUCINATION DIRECTIVE: Never invent features that SPrav does not have (like logins, cloud syncing, etc).
+- EXTREME BREVITY: Keep your answers VERY short. Maximum 2-3 short sentences. Do NOT output long bulleted lists or paragraphs unless specifically asked. Be concise and conversational.
+
+Current page context: {page_context}""".format(page_context=query.page_context or "dashboard")
 
     # Build conversation
     messages = [{"role": "system", "content": system_prompt}]
@@ -222,7 +230,7 @@ Be concise, warm, and practical. If the user seems lost, proactively guide them 
         if history:
             context = "\n".join([f"{h['role'].title()}: {h['content']}" for h in history[-4:]])
             full_prompt = system_prompt + "\n\nRecent conversation:\n" + context + "\n\nUser: " + query.message
-        reply = generate(full_prompt, use_case="extraction")
+        reply = generate(full_prompt, use_case="copilot")
     except Exception as e:
         reply = f"I'm having trouble connecting to the local AI right now. ({e})"
 
@@ -251,7 +259,7 @@ def _write_env_var(key: str, value: str):
 @app.post("/api/debug/reset-jobs")
 def reset_jobs():
     """Wipes the jobs and auto-apply audit tables so the user can start fresh after onboarding."""
-    conn = sqlite3.connect("jobs.db")
+    conn = sqlite3.connect("jobs.db", timeout=30.0)
     c = conn.cursor()
     c.execute("DELETE FROM jobs")
     c.execute("DELETE FROM auto_apply_audit")
@@ -332,7 +340,7 @@ def get_metrics():
     if not os.path.exists(DB_PATH):
         return {"total": 0, "applied": 0, "interviews": 0, "rejected": 0, "new": 0, "manual": 0}
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status")
     rows = dict(cursor.fetchall())
@@ -354,7 +362,7 @@ def get_jobs():
     if not os.path.exists(DB_PATH):
         return []
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT id, title, company, fit_score, status, scam_flags, location, url, missing_skills, matched_skills FROM jobs ORDER BY fit_score DESC")
@@ -366,7 +374,7 @@ def get_jobs():
 def get_job_details(job_id: str):
     if not os.path.exists(DB_PATH):
         raise HTTPException(status_code=404, detail="DB not found")
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
@@ -389,7 +397,7 @@ def get_manual_jobs():
     if not os.path.exists(DB_PATH):
         return []
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     # Include both manual_review and pending_cover_letter so the Cover Letter Gate is visible in UI
@@ -400,7 +408,7 @@ def get_manual_jobs():
 
 @app.post("/api/jobs/{job_id}/apply")
 def mark_job_applied(job_id: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("UPDATE jobs SET status = 'applied' WHERE id = ?", (job_id,))
     conn.commit()
@@ -422,8 +430,12 @@ def _save_watchlist(data: dict):
     with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-@app.get("/api/scope/suggest")
-def suggest_scope():
+class SuggestScopeRequest(BaseModel):
+    current_roles: list[str] = []
+    current_locations: list[str] = []
+
+@app.post("/api/scope/suggest")
+def suggest_scope(req: SuggestScopeRequest):
     """Uses LLM to suggest locations and job roles based on the Knowledge Base (me.json)."""
     kb = get_kb()
     
@@ -431,25 +443,38 @@ def suggest_scope():
     personal = kb.get("personal", {})
     work = kb.get("work_history", [])
     skills = kb.get("skills", {})
+    gh_projects = kb.get("github_projects", [])
+    port_projects = kb.get("portfolio_projects", [])
     
     summary = f"Location: {personal.get('location', '')}\n"
     summary += "Work History:\n"
     for w in work:
         summary += f"- {w.get('role', '')} at {w.get('company', '')}\n"
+    summary += "GitHub Projects:\n"
+    for p in gh_projects:
+        summary += f"- {p.get('name', '')}: {str(p.get('description', ''))[:150]} (Tech: {', '.join(p.get('tech_stack', []))})\n"
+    summary += "Portfolio Projects:\n"
+    for p in port_projects:
+        summary += f"- {p.get('name', '')}: {str(p.get('description', ''))[:150]} (Tech: {', '.join(p.get('tech_stack', []))})\n"
     summary += f"Skills: {json.dumps(skills)}\n"
     
+    exclude_text = ""
+    if req.current_roles or req.current_locations:
+        exclude_text = f"CRITICAL: Do NOT suggest any of these roles: {', '.join(req.current_roles)}\n"
+        exclude_text += f"CRITICAL: Do NOT suggest any of these locations: {', '.join(req.current_locations)}\n"
+    
     prompt = f"""
-    Based on the following professional profile, suggest the 5 best job titles (roles) and 3 best geographic locations to target for their next job. 
-    If the user has a location, include it as one of the 3 locations, plus 2 other major tech/industry hubs that make sense.
-    CRITICAL: You MUST prioritize "India", specific Indian tech hubs (e.g., "Bangalore", "Hyderabad"), or "Remote India" as the top geographic locations.
+    Based on the following professional profile, suggest 10 highly relevant job titles (roles) and 5 geographic locations to target for their next job. 
+    If the user has a location, include it as one of the locations, plus other major tech/industry hubs that make sense globally or in their region.
+    {exclude_text}
     
     Profile:
     {summary}
     
     Return EXACTLY a JSON object with this schema and NO other text:
     {{
-        "roles": ["Role 1", "Role 2", "Role 3", "Role 4", "Role 5"],
-        "locations": ["Location 1", "Location 2", "Location 3"]
+        "roles": ["Role 1", "Role 2", "Role 3", "Role 4", "Role 5", "Role 6", "Role 7", "Role 8", "Role 9", "Role 10"],
+        "locations": ["Location 1", "Location 2", "Location 3", "Location 4", "Location 5"]
     }}
     """
     
@@ -460,6 +485,16 @@ def suggest_scope():
             response = json_match.group(1)
             
         data = json.loads(response)
+        
+        # Strict programmatic filtering to guarantee duplicates are removed
+        if "roles" in data:
+            current_roles_lower = {r.lower() for r in req.current_roles}
+            data["roles"] = [r for r in data["roles"] if r.lower() not in current_roles_lower]
+            
+        if "locations" in data:
+            current_locs_lower = {l.lower() for l in req.current_locations}
+            data["locations"] = [l for l in data["locations"] if l.lower() not in current_locs_lower]
+            
         return {"status": "success", "data": data}
     except Exception as e:
         print(f"[Scope Suggestion Error] {e}")
@@ -471,7 +506,8 @@ def get_watchlist():
     # Augment with snapshot metadata for the UI
     companies = wl.get("companies", [])
     for company in companies:
-        slug = company["name"].lower().replace(" ", "_").replace(r"[^a-z0-9_]", "")
+        c_name = company.get("name") or "unknown"
+        slug = c_name.lower().replace(" ", "_").replace(r"[^a-z0-9_]", "")
         snap_path = os.path.join(SNAPSHOTS_DIR, f"{slug}.json")
         if os.path.exists(snap_path):
             with open(snap_path, "r", encoding="utf-8") as sf:
@@ -515,7 +551,7 @@ def is_blacklisted(company: str) -> bool:
 def is_repost(company: str, title: str) -> bool:
     if not company or not title:
         return False
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     c = conn.cursor()
     # Find any job with the exact same company and title
     c.execute("SELECT id FROM jobs WHERE company = ? AND title = ? LIMIT 1", (company, title))
@@ -531,7 +567,7 @@ async def add_job(job: dict):
     if is_repost(job.get('company', ''), job.get('title', '')):
         return {"status": "skipped_repost"}
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR IGNORE INTO jobs (id, title, company, url, description, location, source, fit_score, scam_flags, status)
@@ -543,7 +579,7 @@ async def add_job(job: dict):
 @app.post("/api/jobs/bulk")
 async def add_jobs_bulk(jobs: list = Body(...)):
     """Endpoint for Node.js Microservice to inject scraped jobs."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     inserted = 0
     for job in jobs:
@@ -564,6 +600,37 @@ async def add_jobs_bulk(jobs: list = Body(...)):
     conn.commit()
     conn.close()
     return {"status": "ok", "inserted": inserted}
+
+@app.get("/api/jobs/{job_id}/details", dependencies=[Depends(verify_token)])
+def get_job_details(job_id: str):
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = dict(row)
+    
+    # Optionally parse evaluation logic from scam_flags or description if used for storing rubric
+    rubric = job.get("scam_flags", "")
+    if "Fit" not in rubric:
+        rubric = None
+        
+    # Check for audit log
+    c.execute("SELECT * FROM auto_apply_audit WHERE job_id = ? ORDER BY attempted_at DESC LIMIT 1", (job_id,))
+    audit_row = c.fetchone()
+    
+    if audit_row:
+        job["audit"] = dict(audit_row)
+    else:
+        job["audit"] = None
+        
+    conn.close()
+    return job
 
 @app.get("/api/kb")
 def get_kb():
@@ -635,7 +702,7 @@ async def approve_cover_letter(job_id: str):
     Approves the cover letter draft and marks the job ready for final dispatch.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         c = conn.cursor()
         c.execute("UPDATE jobs SET status = 'approved_for_dispatch' WHERE id = ?", (job_id,))
         conn.commit()

@@ -6,6 +6,14 @@ import subprocess
 from engine.jd_extractor import fetch_jd_text
 
 def load_targeting() -> dict:
+    try:
+        with open("knowledge_base/scope.json", "r") as f:
+            scope = json.load(f)
+        locs = [l["label"] for l in scope.get("locations", []) if l.get("preference") == "apply"]
+        if locs:
+            return {"target_locations": locs}
+    except:
+        pass
     return {"target_locations": ["Remote", "Worldwide"]}
 
 def is_target_location(job_location: str, target_locations: list) -> bool:
@@ -142,7 +150,7 @@ def scrape_freshershunt() -> list:
         
     try:
         # We pass 10 as the limit
-        result = subprocess.run(["node", js_script, "10"], capture_output=True, text=True, timeout=120)
+        result = subprocess.run(["node", js_script, "10"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
         
         # The JS script outputs JSON on the very last line
         output = result.stdout.strip()
@@ -166,7 +174,7 @@ def scrape_freshershunt() -> list:
             "company": "Freshershunt Extracted", # Usually need deeper extraction for company name
             "url": item.get("url", ""),
             "description": f"Extracted from {item.get('original_post')}",
-            "location": "India / Remote",
+            "location": item.get("location", "Unspecified"),
             "source": "Freshershunt",
             "fit_score": 0,
             "scam_flags": "",
@@ -195,6 +203,8 @@ def scrape_company_watchlist() -> list:
             ["node", js_script],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=300  # 5 min max — 20 companies × ~15s each
         )
 
@@ -233,7 +243,7 @@ def scrape_company_watchlist() -> list:
             "company": company,
             "url": job_url,
             "description": description,
-            "location": item.get("location", "India"),
+            "location": item.get("location", "Unspecified"),
             "source": "company_watcher",
             "fit_score": 0,
             "scam_flags": "",
@@ -271,9 +281,7 @@ def run_all_scrapers() -> list:
     jobs.extend(scrape_portal("hirist", "hirist_scraper.js"))
 
     print("Scraping Wellfound (Startup Ecosystem)...")
-    jobs.extend(scrape_portal("wellfound", "wellfound_scraper.js",
-                              keywords=["software engineer", "backend engineer",
-                                        "frontend engineer", "full stack engineer"]))
+    jobs.extend(scrape_portal("wellfound", "wellfound_scraper.js"))
 
     print(f"Total jobs discovered: {len(jobs)}")
     return jobs
@@ -281,17 +289,9 @@ def run_all_scrapers() -> list:
 def scrape_naukri(keywords: list = None, limit_per_keyword: int = 20) -> list:
     """
     Runs naukri_scraper.js for each target keyword and returns new job listings.
-    Keywords default to common SDE/tech roles if not specified.
     """
     if keywords is None:
-        keywords = [
-            "software developer",
-            "backend developer",
-            "frontend developer",
-            "full stack developer",
-            "python developer",
-            "react developer",
-        ]
+        keywords = DEFAULT_KEYWORDS
 
     js_script = os.path.join(os.path.dirname(__file__), "..", "scraper_service", "naukri_scraper.js")
     if not os.path.exists(js_script):
@@ -319,7 +319,7 @@ def scrape_naukri(keywords: list = None, limit_per_keyword: int = 20) -> list:
                     "company": item.get("company", ""),
                     "url": item.get("url", ""),
                     "description": item.get("description", ""),
-                    "location": item.get("location", "India"),
+                    "location": item.get("location", "Unspecified"),
                     "source": "Naukri",
                     "fit_score": 0,
                     "scam_flags": "",
@@ -334,13 +334,37 @@ def scrape_naukri(keywords: list = None, limit_per_keyword: int = 20) -> list:
     return all_jobs
 
 
-DEFAULT_KEYWORDS = [
-    "software developer",
-    "backend developer",
-    "full stack developer",
-    "python developer",
-    "react developer",
-]
+def _expand_keywords(base_keywords):
+    synonyms_groups = [
+        ["software engineer", "software developer", "backend engineer", "full stack", "programmer", "sde", "developer"],
+        ["frontend", "ui developer", "front end", "react developer", "javascript developer", "web developer"],
+        ["backend", "back end", "api developer", "server side", "python developer", "java developer", "node developer"],
+        ["data scientist", "machine learning", "ml engineer", "ai engineer", "artificial intelligence", "data analyst", "nlp developer", "deep learning", "generative ai", "rag", "research scientist"],
+        ["product manager", "program manager", "product owner", "technical lead", "tech lead", "project manager"],
+        ["devops", "sre", "site reliability", "platform engineer", "cloud engineer", "infrastructure"],
+        ["qa", "sdet", "test engineer", "quality assurance", "automation engineer"]
+    ]
+    expanded = set(base_keywords)
+    for kw in base_keywords:
+        kw_lower = kw.lower()
+        for group in synonyms_groups:
+            # If the user keyword overlaps with any synonym in this group, include the whole group
+            if any(syn in kw_lower or kw_lower in syn for syn in group):
+                expanded.update(group)
+    return list(expanded)
+
+def _get_dynamic_keywords():
+    try:
+        with open("knowledge_base/scope.json", "r") as f:
+            scope = json.load(f)
+        kws = [r["keyword"] for r in scope.get("roles", []) if r.get("preference") == "apply"]
+        if kws:
+            return _expand_keywords(kws)
+    except:
+        pass
+    return _expand_keywords(["software engineer"]) # Fallback only if scope is completely broken or missing
+
+DEFAULT_KEYWORDS = _get_dynamic_keywords()
 
 
 def scrape_portal(source_name: str, js_file: str, keywords: list = None, limit_per_keyword: int = 20) -> list:
@@ -364,6 +388,8 @@ def scrape_portal(source_name: str, js_file: str, keywords: list = None, limit_p
                 ["node", js_script, keyword, str(limit_per_keyword)],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=120,
                 env={**__import__('os').environ}
             )
@@ -378,7 +404,7 @@ def scrape_portal(source_name: str, js_file: str, keywords: list = None, limit_p
                     "company": item.get("company", ""),
                     "url": item.get("url", ""),
                     "description": item.get("description", ""),
-                    "location": item.get("location", "India"),
+                    "location": item.get("location", "Unspecified"),
                     "source": source_name.capitalize(),
                     "fit_score": 0,
                     "scam_flags": "",

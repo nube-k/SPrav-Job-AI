@@ -38,9 +38,26 @@ frontend/dist/
 Thumbs.db
 
 # Logs & History
+*.log
+*.txt
+!requirements.txt
+!tests/*.txt
+!knowledge_base/*.txt
 crash.log
 error.log
 desktop_app.log
 knowledge_base/history/
 logs/
 *.db
+
+scraper_service/node_modules/
+scraper_service/snapshots/
+
+# Personal User Data
+knowledge_base/me.json
+knowledge_base/master_identity.txt
+knowledge_base/scope.json
+config.json
+watchlist.json
+
+uvicorn.log
